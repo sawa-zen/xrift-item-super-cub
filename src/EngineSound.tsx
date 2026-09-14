@@ -268,7 +268,11 @@ export const EngineSound = ({ getVehicle, seatId }: { getVehicle: GetVehicle; se
     let masterTarget: number
     if (driver) {
       const status = getSuperCubStatus(vehicle)
-      rpm = engineRpm(status.speed, tops[status.gear - 1].top)
+      // N時は空ぶかし。W開度でアイドリングからレッドラインまで回る
+      rpm =
+        status.gear === 0
+          ? IDLE_RPM + Math.max(0, Math.min(1, status.rev)) * (REDLINE_RPM - IDLE_RPM)
+          : engineRpm(Math.max(0, status.speed), tops[Math.max(status.gear, 1) - 1].top)
       // クランキング中はエンジン本体を抑え、終わったらアイドリングに繋がる
       masterTarget = cranking ? 0 : 1.05
       if (doCrank) scheduleCrank(n, t, CRANK_PEAK)

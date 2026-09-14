@@ -112,7 +112,7 @@ const overlayStyle: CSSProperties = {
 
 /** orbit試走用(?orbit=1)のギア比読み出し。TestRideRigの台車状態をポーリングする */
 const DevGearReadout = () => {
-  const [gear, setGear] = useState(1)
+  const [gear, setGear] = useState(0)
   const [kmh, setKmh] = useState(0)
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -120,14 +120,14 @@ const DevGearReadout = () => {
       if (!rig) return
       const st = getSuperCubStatus(rig)
       setGear(st.gear)
-      setKmh(Math.round(Math.max(0, st.speed) * 3.6))
+      setKmh(st.gear === 0 ? 0 : Math.round(Math.abs(st.speed) * 3.6))
     }, 150)
     return () => window.clearInterval(id)
   }, [])
   const tops = SUPER_CUB_TUNE.gears.map((g) => Math.round(g.top * 3.6))
   return (
     <div>
-      ギア {gear}速・{kmh} km/h（比 {tops.map((t, i) => `${i + 1}速:${t}`).join(' / ')} km/h）
+      ギア {gear === 0 ? 'N' : `${gear}速`}・{kmh} km/h（比 {tops.map((t, i) => `${i + 1}速:${t}`).join(' / ')} km/h）
     </div>
   )
 }
@@ -226,6 +226,8 @@ if (orbitMode) {
           <DevGearReadout />
           W / ↑：アクセル(Wダブルタップでシフトアップ)　S / ↓：ブレーキ(Sダブルタップでシフトダウン)　A D / ← →：ハンドル
           <br />
+          N発進のロータリー式(1速↓でN・停止中4速↑でN)。NではWで空ぶかし・Sでよちよち後退
+          <br />
           Shift：シフトアップ　ドラッグで視点回転・ホイールでズーム。本番ではシートを狙って「バイクに乗る」
         </div>
       </div>
@@ -268,7 +270,7 @@ window.addEventListener('keydown', (event) => {
     if (rig) {
       const data = ((rig.userData.superCub ??= {
         speed: 0,
-        gear: 1,
+        gear: 0,
         cut: 0,
         shiftRequests: 0,
         prevForward: 0,

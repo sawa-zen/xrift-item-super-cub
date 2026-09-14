@@ -56,7 +56,7 @@ const drawMeter = (
   ctx.fillText('GEAR', 128, 72)
   ctx.fillStyle = '#ffc63a'
   ctx.font = '700 150px sans-serif'
-  ctx.fillText(String(gear), 128, 218)
+  ctx.fillText(gear === 0 ? 'N' : String(gear), 128, 218)
 
   // 速度(右)
   ctx.fillStyle = '#8f9a86'
@@ -114,7 +114,7 @@ export const GearMeter3D = ({ getVehicle, seatId }: { getVehicle: GetVehicle; se
   const tmpPos = useMemo(() => new Vector3(), [])
   const tmpQuat = useMemo(() => new Quaternion(), [])
   const tmpFwd = useMemo(() => new Vector3(), [])
-  const smooth = useRef({ speed: 0, gear: 1, ready: false, acc: 0 })
+  const smooth = useRef({ speed: 0, gear: 0, ready: false, acc: 0 })
 
   useFrame((_, delta) => {
     if (!occupiedRef.current) {
@@ -131,7 +131,8 @@ export const GearMeter3D = ({ getVehicle, seatId }: { getVehicle: GetVehicle; se
     let targetGear: number
     if (isDriverRef.current) {
       const st = getSuperCubStatus(vehicle)
-      targetSpeed = Math.max(0, st.speed)
+      // N時は速度表示を0のままにする
+      targetSpeed = st.gear === 0 ? 0 : Math.abs(st.speed)
       targetGear = st.gear
     } else {
       // 非運転者クライアントは移動量から推定(ホイール回転と同じ方式)

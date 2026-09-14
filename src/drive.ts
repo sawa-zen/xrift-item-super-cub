@@ -37,11 +37,15 @@ export interface GroundProbe {
  * 各ギアの `top` は実用上のシフトポイント(約7200-8600rpm相当)で、
  * HUDのギア比表示にも使う。
  *
- * ギアは1-4速のマニュアル。Vehicle/Seat APIで届くのは forward/right のみで、
+ * ギアはN・1-4速のロータリー式マニュアル(実車のカブ通り)。
+ * Vehicle/Seat APIで届くのは forward/right のみで、
  * Shift等の修飾キーはプラットフォーム側に止められて届かない環境がある。そのため:
  * - シフトアップ: Wのダブルタップ(全環境で動作)。Shiftキーでも可(届く環境のみ)
  * - シフトダウン: Sのダブルタップ。S単発・長押しはブレーキ専用(ギアは変わらない)
+ * - 1速からのダウンでN、停止中の4速からのアップでNに戻る
  * - `autoShift` が false の間は回転上限・速度低下での自動変速は入らない
+ * - Nでは駆動が切れる。Wは空ぶかし(音だけ・前進なし)、Sでよちよち後退のみ
+ *   (壁に詰まった時の脱出用)。N時の速度表示は0のまま
  */
 export const SUPER_CUB_TUNE = {
   /** 前進の最高速度 [m/s] */
@@ -77,6 +81,12 @@ export const SUPER_CUB_TUNE = {
   downMargin: 0.8,
   /** 変速時のトルク抜け時間 [s] */
   shiftCut: 0.22,
+  /** 停止中とみなす速度 [m/s]。停止中の4速アップでNに戻れる */
+  stopSpeed: 0.5,
+  /** N時のよちよち前進ではなく惰性→足漕ぎの切り替え速度 [m/s] */
+  paddleFwd: 1.2,
+  /** N時のよちよち後退 [m/s](正値で持つ) */
+  paddleRev: 1.0,
   /**
    * true の間だけ回転上限・速度低下での自動変速が入る。
    * false では Shift/Sキーによる完全手動変速(発進時のギアも保持される)。
@@ -147,37 +157,42 @@ const resistForce = (speed: number): number =>
   SUPER_CUB_TUNE.rollingCrr * SUPER_CUB_TUNE.mass * GRAVITY +
   0.5 * AIR_DENSITY * SUPER_CUB_TUNE.aeroCdA * speed * speed
 
-export interface SuperCubStatus {  /** 現在の前後速度(+が前進)[m/s] */
+export interface SuperCubStatus {  /** 現在の前後速度(+が前進、N時のみ-あり)[m/s] */
   speed: number
-  /** 現在のギア(1-4) */
+  /** 現在のギア(0=N、1-4) */
   gear: number
-  /** 現在ギアの上限速度 [m/s] */
+  /** 現在ギアの上限速度 [m/s](N時は1速のを使う) */
   top: number
   /** 各ギアの上限速度 [m/s]。ギア比表示用 */
   tops: number[]
+  /** N時のW開度(空ぶかし用、0-1) */
+  rev: number
 }
 
 /**
  * 表示用の走行状態を取得。`Item`のメーター/HUDと開発用オーバーレイから使う。
- * 状態が未初期化のときは停止中・1速を返す。
+ * 状態が未初期化のときは停止中・Nを返す。
  */
 export const getSuperCubStatus = (vehicle: Group | null | undefined): SuperCubStatus => {
   const gears = SUPER_CUB_TUNE.gears
   const state = vehicle?.userData.superCub as SuperCubDriveState | undefined
-  const gear = state && state.gear >= 1 && state.gear <= gears.length ? state.gear : 1
+  const gear = state && state.gear >= 0 && state.gear <= gears.length ? state.gear : 0
   return {
     speed: state?.speed ?? 0,
     gear,
-    top: gears[gear - 1].top,
+    top: gears[Math.max(gear, 1) - 1].top,
     tops: gears.map((g) => g.top),
+    rev: state?.rev ?? 0,
   }
 }
 
 export interface SuperCubDriveState {
-  /** 現在の前後速度(+が前進)[m/s]。運転者のクライアントでのみ保持する */
+  /** 現在の前後速度(+が前進)[m/s]。N時のみ後退(-)あり。運転者のクライアントでのみ保持する */
   speed: number
-  /** 現在のギア(1-4) */
+  /** 現在のギア(0=N、1-4) */
   gear: number
+  /** N時のW開度(空ぶかし用、0-1) */
+  rev: number
   /** 変速トルク抜けの残り時間 [s] */
   cut: number
   /** Shiftキーによるシフトアップ要求回数 */
@@ -208,7 +223,8 @@ export interface SuperCubDriveState {
 const getState = (vehicle: Group): SuperCubDriveState => {
   const state = (vehicle.userData.superCub ??= {
     speed: 0,
-    gear: 1,
+    gear: 0,
+    rev: 0,
     cut: 0,
     shiftRequests: 0,
     downRequests: 0,
@@ -234,6 +250,7 @@ const getState = (vehicle: Group): SuperCubDriveState => {
   state.lastWRise ??= -10
   state.lastSFall ??= -10
   state.downRequests ??= 0
+  state.rev ??= 0
   return state
 }
 
@@ -250,6 +267,17 @@ export const driveSuperCub = (
 ): void => {
   const state = getState(vehicle)
   const gears = SUPER_CUB_TUNE.gears
+  // 座標が壊れる(NaN等)と消えっぱなしになるため、検知したら配置原点に戻す
+  const vpos = vehicle.position
+  if (!Number.isFinite(vpos.x + vpos.y + vpos.z)) {
+    vpos.set(0, 0, 0)
+    vehicle.quaternion.identity()
+    state.speed = 0
+    state.vy = 0
+    state.pitch = 0
+    state.roll = 0
+    state.lean = 0
+  }
   const dt = Math.min(delta, 0.05)
   state.time += dt
 
@@ -275,16 +303,20 @@ export const driveSuperCub = (
     state.lastSFall = state.time
   }
 
-  // Shiftキーによる手動シフトアップ。連打分は1段ずつ消費する
+  // 手動シフトアップ。N→1速、1→2→3→4速、停止中の4速→N(ロータリー)
   if (state.cut <= 0 && state.shiftRequests > 0) {
     state.shiftRequests = Math.max(0, state.shiftRequests - 1)
     if (state.gear < gears.length) {
       state.gear += 1
       state.cut = SUPER_CUB_TUNE.shiftCut
+    } else if (Math.abs(state.speed) < SUPER_CUB_TUNE.stopSpeed) {
+      state.gear = 0
+      state.cut = SUPER_CUB_TUNE.shiftCut * 0.7
     }
   }
 
-  // Sダブルタップによる手動シフトダウン。連打分は1段ずつ消費する
+  // Sダブルタップによる手動シフトダウン。1速からはNに入る(Nでは変化なし)。
+  // Nに入るときはクラッチが切れるためショックは付けない
   if (state.cut <= 0 && state.downRequests > 0) {
     state.downRequests = Math.max(0, state.downRequests - 1)
     if (state.gear > 1) {
@@ -297,12 +329,15 @@ export const driveSuperCub = (
         state.speed = newTop + (state.speed - newTop) * DOWNSHIFT_SHOCK_RETAIN
       }
       state.speed = Math.max(0, state.speed - DOWNSHIFT_KICK)
+    } else if (state.gear === 1) {
+      state.gear = 0
+      state.cut = SUPER_CUB_TUNE.shiftCut * 0.7
     }
   }
   if (state.cut > 0) {
     // 変速トルク抜け中は惰性
     state.cut = Math.max(0, state.cut - dt)
-  } else if (SUPER_CUB_TUNE.autoShift) {
+  } else if (SUPER_CUB_TUNE.autoShift && state.gear >= 1) {
     const top = gears[state.gear - 1].top
     if (state.gear < gears.length && target > top && state.speed >= top - 0.05) {
       // 回転上限での自動シフトアップ
@@ -317,7 +352,10 @@ export const driveSuperCub = (
       state.cut = SUPER_CUB_TUNE.shiftCut * 0.7
     }
   }
-  const gearIndex = Math.min(state.gear, gears.length) - 1
+  const inNeutral = state.gear === 0
+  // NでのW開度(空ぶかし用)。音の表示用に保持する
+  state.rev = inNeutral ? Math.max(0, input.forward) : 0
+  const gearIndex = Math.min(Math.max(state.gear, 1), gears.length) - 1
   // 登坂では最高速が落ち、下りでは少し伸びる。state.pitch(+が登り)を使う
   const gradeFactor = Math.max(0.35, Math.min(1.25, 1 - state.pitch * 1.1))
   const capped = Math.min(
@@ -328,7 +366,18 @@ export const driveSuperCub = (
   // 4速の弱い発進・弱いエンブレはギア比から自然に出る
   const throttleOpen = target > 0.5
   let accel: number
-  if (state.cut > 0) {
+  if (inNeutral) {
+    // Nでは駆動が切れる。Wは空ぶかし(音だけ)で前進なし、Sでよちよち後退のみ。
+    // よちよち域を外れている(高速でNに入れた直後など)は抵抗だけの惰性
+    const fast =
+      state.speed > SUPER_CUB_TUNE.paddleFwd || state.speed < -SUPER_CUB_TUNE.paddleRev
+    if (fast) {
+      accel = (-Math.sign(state.speed) * resistForce(Math.abs(state.speed))) / SUPER_CUB_TUNE.mass
+    } else {
+      const paddleTarget = input.forward < -0.5 ? -SUPER_CUB_TUNE.paddleRev : 0
+      accel = Math.max(-6, Math.min(6, (paddleTarget - state.speed) * 6))
+    }
+  } else if (state.cut > 0) {
     // 変速トルク抜け中は駆動もエンブレも抜ける。機械ブレーキは独立して効く
     accel =
       input.forward < -0.5
@@ -352,12 +401,17 @@ export const driveSuperCub = (
         : 0
     accel = -(overRev + resistForce(state.speed)) / SUPER_CUB_TUNE.mass
   }
-  state.speed = Math.max(0, state.speed + accel * dt)
+  // ギア入りでは後退なし。N時のみよちよち域まで-あり
+  state.speed = inNeutral
+    ? Math.max(-SUPER_CUB_TUNE.paddleRev, state.speed + accel * dt)
+    : Math.max(0, state.speed + accel * dt)
   state.prevForward = input.forward
 
   const probe = (vehicle.userData as { ground?: GroundProbe }).ground
-  // 前方の壁は通り抜けずに止まる(登れる坂は止めない)
-  if (probe && state.speed > 0.3 && isBlockedAhead(vehicle, probe, state.speed)) {
+  // 壁は通り抜けずに止まる(登れる坂は止めない)。Nのよちよち後退も見る
+  if (probe && state.speed > 0.3 && isBlocked(vehicle, probe, state.speed, false)) {
+    state.speed = 0
+  } else if (probe && state.speed < -0.3 && isBlocked(vehicle, probe, -state.speed, true)) {
     state.speed = 0
   }
 
@@ -431,7 +485,7 @@ const _localQuat = new Quaternion()
 const _fwd = new Vector3()
 const _world = new Vector3()
 
-/** 前方の壁検知。バンパー位置から水平に飛ばし、登れる坂は無視する */
+/** 進行方向の壁検知。バンパー位置から水平に飛ばし、登れる坂は無視する */
 const BLOCK_HEIGHT = 0.35
 const BLOCK_AHEAD = 0.75
 const BLOCK_BASE_DIST = 0.45
@@ -439,13 +493,19 @@ const BLOCK_SPEED_K = 0.25
 /** これ以上の法線Yは登れる坂として通過させる */
 const CLIMBABLE_NORMAL_Y = 0.55
 
-const isBlockedAhead = (vehicle: Group, probe: GroundProbe, speed: number): boolean => {
+const isBlocked = (
+  vehicle: Group,
+  probe: GroundProbe,
+  speed: number,
+  reverse: boolean,
+): boolean => {
   vehicle.getWorldPosition(_worldPos)
   vehicle.getWorldQuaternion(_worldQuat)
   _fwd.set(0, 0, -1).applyQuaternion(_worldQuat)
   _fwd.y = 0
   if (_fwd.lengthSq() < 1e-6) return false
   _fwd.normalize()
+  if (reverse) _fwd.negate()
   const origin = {
     x: _worldPos.x + _fwd.x * BLOCK_AHEAD,
     y: _worldPos.y + BLOCK_HEIGHT,
@@ -481,6 +541,8 @@ const setWorldY = (vehicle: Group, worldY: number): void => {
   vehicle.getWorldPosition(_world)
   _world.y = worldY
   parent.worldToLocal(_world)
+  // 親の行列が壊れている(非表示化のゼロスケール等)とNaNになるため書かない
+  if (!Number.isFinite(_world.x + _world.y + _world.z)) return
   vehicle.position.y = _world.y
 }
 

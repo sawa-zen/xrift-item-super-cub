@@ -165,6 +165,30 @@ export const Item = () => {
     [],
   )
 
+  // 引っ込め→再表示で掛け直されたとき、走行でずれた分を捨てて配置原点に戻す。
+  // ギアは保持する
+  useEffect(() => {
+    const vehicle = vehicleChildRef.current?.parent as Group | undefined
+    if (!vehicle) return
+    vehicle.position.set(0, 0, 0)
+    vehicle.quaternion.identity()
+    const st = vehicle.userData.superCub as SuperCubDriveState | undefined
+    if (st) {
+      st.speed = 0
+      st.rev = 0
+      st.vy = 0
+      st.cut = 0
+      st.shiftRequests = 0
+      st.downRequests = 0
+      st.prevForward = 0
+      st.pitch = 0
+      st.roll = 0
+      st.lean = 0
+      st.hasGround = false
+      st.noGroundFrames = 0
+    }
+  }, [])
+
   // 降車時はスピードだけリセットし、ギアは保持する。
   // 速度は運転者のローカルにしか無いため、降りた本人のクライアントで消す
   const isDriver = useIsDriver(DRIVER_SEAT_ID)
@@ -175,6 +199,7 @@ export const Item = () => {
       const st = vehicle?.userData.superCub as SuperCubDriveState | undefined
       if (st) {
         st.speed = 0
+        st.rev = 0
         st.cut = 0
         st.shiftRequests = 0
         st.downRequests = 0
@@ -227,7 +252,7 @@ export const Item = () => {
       if (!vehicle) return
       const data = (vehicle.userData.superCub ??= {
         speed: 0,
-        gear: 1,
+        gear: 0,
         cut: 0,
         shiftRequests: 0,
         prevForward: 0,
