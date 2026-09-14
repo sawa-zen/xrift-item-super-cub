@@ -196,6 +196,8 @@ export interface SuperCubDriveState {
   hasGround: boolean
   /** 地面レイが外れ続けているフレーム数(診断用) */
   noGroundFrames: number
+  /** 落下中の垂直速度 [m/s](-が下降)。接地したら0に戻る */
+  vy: number
   /** 平滑化したピッチ・ロール [rad] */
   pitch: number
   roll: number
@@ -216,6 +218,7 @@ const getState = (vehicle: Group): SuperCubDriveState => {
     lastSFall: -10,
     hasGround: false,
     noGroundFrames: 0,
+    vy: 0,
     pitch: 0,
     roll: 0,
     lean: 0,
@@ -223,6 +226,7 @@ const getState = (vehicle: Group): SuperCubDriveState => {
   // 旧セーブとの互換のため欠損補完
   state.hasGround ??= false
   state.noGroundFrames ??= 0
+  state.vy ??= 0
   state.pitch ??= 0
   state.roll ??= 0
   state.lean ??= 0
@@ -403,6 +407,10 @@ const BUMP_STEP = 0.22
 /** 車高の伸び・縮み速度制限 [m/s] */
 const CLIMB_UP = 8
 const FALL_RATE = 8
+/** 地面レイがこのフレーム数外れ続けたら本物の穴とみなして落下する */
+const FALL_GRACE_FRAMES = 10
+/** 落下の終端速度 [m/s] */
+const FALL_TERMINAL = -25
 
 /** 有限値だけのmax。両方無効ならnull */
 const finiteMax = (a: number | null, b: number | null): number | null => {
@@ -523,15 +531,22 @@ const followGround = (
     }
   }
   if (count === 0) {
-    // 地面データなし：高度も姿勢も触らず保持する(落下させない)。
-    // 段差越えの落下は、5m以内の地面が見えれば追従側で下がる
+    // 地面データなし：短い外れは段差の継ぎ目とみなして保持する。
+    // 外れ続けたら本物の穴とみなして重力で落とす
     state.noGroundFrames += 1
     if (state.noGroundFrames === 240) {
       console.warn('[super-cub] 地面レイが当たっていません。平坦走行になります')
     }
+    if (state.noGroundFrames >= FALL_GRACE_FRAMES) {
+      state.vy = Math.max(FALL_TERMINAL, state.vy - GRAVITY * dt)
+      vehicle.getWorldPosition(_world)
+      setWorldY(vehicle, _world.y + state.vy * dt)
+    }
     return
   }
   state.noGroundFrames = 0
+  state.vy = 0
+  const firstGround = !state.hasGround
   state.hasGround = true
   vehicle.getWorldPosition(_world)
   // 車高は最も高いプローブに合わせる(平均だと凸凹にめり込む)
@@ -550,8 +565,8 @@ const followGround = (
     state.speed = Math.max(0, state.speed * (1 - Math.min(1, dt * 6)))
   }
   const diff = target - _world.y
-  if (Math.abs(diff) > 2) {
-    // 大きく離れている初回はスナップ
+  if (firstGround && Math.abs(diff) > 2) {
+    // 大きく離れている初回はスナップ。以降は速度制限で寄せて着地をワープさせない
     setWorldY(vehicle, target)
     return
   }
