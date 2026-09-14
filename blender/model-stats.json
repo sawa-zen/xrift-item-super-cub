@@ -1,0 +1,27 @@
+{
+  "source": "Blender 5.1 / Blender Lab MCP",
+  "source_objects": 398,
+  "export_meshes": 51,
+  "materials": 25,
+  "zones": [
+    "FrontWheel",
+    "RearWheel",
+    "Stand",
+    "Steer"
+  ],
+  "triangles": 198334,
+  "vertices": 108460,
+  "glb_bytes": 4540656,
+  "dimensions_m": {
+    "width": 0.729,
+    "height": 1.226,
+    "length": 1.7809
+  },
+  "wheelbase_m": 1.175,
+  "gltf_axes": {
+    "up": "+Y",
+    "forward": "+Z",
+    "ground": "Y=0"
+  },
+  "textures": 0
+}

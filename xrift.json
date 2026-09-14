@@ -1,0 +1,9 @@
+{
+  "item": {
+    "distDir": "./dist",
+    "buildCommand": "npm run build",
+    "title": "Super CUB",
+    "description": "丸目・深緑の車体とアイボリーのレッグシールドを備えたクラシックなスーパーカブ。シートから乗って走れる。",
+    "thumbnailPath": "thumbnail.png"
+  }
+}
