@@ -599,13 +599,18 @@ export const Item = () => {
     const dist = tmpMove.length()
     // 前進を正とした速度
     const speed = dist > 1e-6 ? tmpMove.dot(tmpFwd) / dt : 0
-    // ヨーレートから切れ角を推定(自転車モデル)。+がモデル左(+X)への旋回
+    // ヨーレートから切れ角を推定(自転車モデル)。+がモデル左(+X)への旋回。
+    // 後退時はヨーとハンドルが逆向きになるため符号を反転し、入力方向と一致させる
+    // (反転しないとDを押しながら下がるときバーが逆に切れて見える)
+    const dirSign = speed >= 0 ? 1 : -1
     const crossY = state.prevFwd.z * tmpFwd.x - state.prevFwd.x * tmpFwd.z
     const steerTarget = Math.max(
       -MAX_STEER,
       Math.min(
         MAX_STEER,
-        Math.atan2((crossY / dt) * WHEEL_BASE, Math.max(Math.abs(speed), 0.5)) * STEER_GAIN,
+        Math.atan2((crossY / dt) * WHEEL_BASE, Math.max(Math.abs(speed), 0.5)) *
+          STEER_GAIN *
+          dirSign,
       ),
     )
     const standTarget = Math.abs(speed) > 0.5 ? STAND_FOLDED : 0
