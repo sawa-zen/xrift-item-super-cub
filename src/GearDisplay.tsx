@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Billboard } from '@react-three/drei'
 import { useSeatContext } from '@xrift/world-components'
-import { CanvasTexture, Group, SRGBColorSpace, Vector3, Quaternion } from 'three'
+import { CanvasTexture, Group, SRGBColorSpace } from 'three'
 import { SUPER_CUB_TUNE, getSuperCubStatus } from './drive'
 
 /** ローカルプレイヤーが指定席の運転者かどうか。占有変化で再評価する */
@@ -83,18 +83,10 @@ const drawMeter = (
 }
 
 export const GearMeter3D = ({ getVehicle, seatId }: { getVehicle: GetVehicle; seatId: string }) => {
+  // 自分が運転しているときだけ表示。他人のカブのメーターは出さない
   const isDriver = useIsDriver(seatId)
   const isDriverRef = useRef(isDriver)
   isDriverRef.current = isDriver
-  // 運転席が空の駐車中はHUDを出さない(誰かが乗ったら表示)
-  const seat = useSeatContext()
-  const occupied = useSyncExternalStore(
-    seat.subscribeOccupancy,
-    () => seat.getOccupantId(seatId) !== null,
-    () => false,
-  )
-  const occupiedRef = useRef(occupied)
-  occupiedRef.current = occupied
 
   const canvas = useMemo(() => {
     const c = document.createElement('canvas')
@@ -109,16 +101,11 @@ export const GearMeter3D = ({ getVehicle, seatId }: { getVehicle: GetVehicle; se
   }, [canvas])
   useEffect(() => () => texture.dispose(), [texture])
 
-  const prev = useMemo(() => new Vector3(), [])
-  const prevFwd = useMemo(() => new Vector3(0, 0, -1), [])
-  const tmpPos = useMemo(() => new Vector3(), [])
-  const tmpQuat = useMemo(() => new Quaternion(), [])
-  const tmpFwd = useMemo(() => new Vector3(), [])
   const smooth = useRef({ speed: 0, gear: 0, ready: false, acc: 0 })
 
   useFrame((_, delta) => {
-    if (!occupiedRef.current) {
-      // 駐車中は描き替えず、次に乗ったとき推定が古い値で始まらないよう捨てる
+    if (!isDriverRef.current) {
+      // 自分が運転していない間は描き替えず、次に乗ったとき推定が古い値で始まらないよう捨てる
       smooth.current.ready = false
       return
     }
@@ -127,38 +114,11 @@ export const GearMeter3D = ({ getVehicle, seatId }: { getVehicle: GetVehicle; se
     const dt = Math.min(delta, 0.05)
     const s = smooth.current
 
-    let targetSpeed: number
-    let targetGear: number
-    if (isDriverRef.current) {
-      const st = getSuperCubStatus(vehicle)
-      // N時は速度表示を0のままにする
-      targetSpeed = st.gear === 0 ? 0 : Math.abs(st.speed)
-      targetGear = st.gear
-    } else {
-      // 非運転者クライアントは移動量から推定(ホイール回転と同じ方式)
-      vehicle.getWorldPosition(tmpPos)
-      vehicle.getWorldQuaternion(tmpQuat)
-      tmpFwd.set(0, 0, -1).applyQuaternion(tmpQuat)
-      if (!s.ready) {
-        prev.copy(tmpPos)
-        prevFwd.copy(tmpFwd)
-        s.ready = true
-        return
-      }
-      const dist = tmpPos.distanceTo(prev)
-      const est = dist > 1e-7 ? (tmpPos.x - prev.x) * tmpFwd.x + (tmpPos.y - prev.y) * tmpFwd.y + (tmpPos.z - prev.z) * tmpFwd.z : 0
-      targetSpeed = Math.max(0, est / dt)
-      const tops = SUPER_CUB_TUNE.gears
-      targetGear = tops.length
-      for (let i = 0; i < tops.length; i += 1) {
-        if (targetSpeed <= tops[i].top + 0.05) {
-          targetGear = i + 1
-          break
-        }
-      }
-      prev.copy(tmpPos)
-      prevFwd.copy(tmpFwd)
-    }
+    // 運転者のクライアントでは正確なギア・速度を表示する
+    const st = getSuperCubStatus(vehicle)
+    // N時は速度表示を0のままにする
+    const targetSpeed = st.gear === 0 ? 0 : Math.abs(st.speed)
+    const targetGear = st.gear
 
     // 速度は滑らかに、ギアは確定で。描画はギア変化時か約8Hzに間引く
     const blend = Math.min(1, dt * 6)
@@ -178,10 +138,10 @@ export const GearMeter3D = ({ getVehicle, seatId }: { getVehicle: GetVehicle; se
   })
 
   // 実メーターのすぐ上に置き、運転視点・VRでもメーター cluster として読めるようにする。
-  // 駐車中(運転席が空)は非表示
+  // 自分が運転しているときだけ表示
   return (
     <Billboard position={[0, 1.2, -0.3]}>
-      <mesh scale={[0.24, 0.12, 1]} visible={occupied}>
+      <mesh scale={[0.24, 0.12, 1]} visible={isDriver}>
         <planeGeometry args={[1, 0.5]} />
         <meshBasicMaterial map={texture} transparent toneMapped={false} />
       </mesh>
