@@ -2,7 +2,7 @@ import { Suspense, useCallback, useEffect, useId, useMemo, useRef, useSyncExtern
 import { useGLTF } from '@react-three/drei'
 import { useFrame } from '@react-three/fiber'
 import { useRapier } from '@react-three/rapier'
-import { Seat, Vehicle, useItem, useSeatContext } from '@xrift/world-components'
+import { Seat, Vehicle, useItem, usePlacementState, useSeatContext } from '@xrift/world-components'
 import { Group, Matrix4, Mesh, Object3D, Quaternion, Vector3 } from 'three'
 import { driveSuperCub } from './drive'
 import type { GroundProbe, SuperCubDriveState } from './drive'
@@ -155,6 +155,10 @@ interface AnimState {
  */
 export const Item = () => {
   const { vehicleId, driverSeatId, passengerSeatId } = useScopedIds()
+  // 設置プレビューではゴースト化で全マテリアルがopacity 0.5に差し替えられるため、
+  // 透明な当たり判定キューブが白く見えてしまう。プレビュー中は描画しない
+  const { mode } = usePlacementState()
+  const isPreview = mode === 'preview'
   const pivots = useMemo(createPivots, [])
   const modelRef = useRef<Group>(null)
   // Vehicleグループへの参照取得用。Vehicleはrefを中継しないため、
@@ -374,12 +378,15 @@ export const Item = () => {
         position={[0, 0.74, 0.265]}
         exitOffset={{ forward: 0, right: -1 }}
         interactionText="バイクに乗る"
+        enabled={!isPreview}
       >
-        {/* シートを狙いやすくする透明な当たり判定 */}
-        <mesh position={[0, 0.06, 0]}>
-          <boxGeometry args={[0.42, 0.24, 0.55]} />
-          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-        </mesh>
+        {/* シートを狙いやすくする透明な当たり判定。プレビューでは白キューブ化するため描画しない */}
+        {!isPreview && (
+          <mesh position={[0, 0.06, 0]}>
+            <boxGeometry args={[0.42, 0.24, 0.55]} />
+            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+          </mesh>
+        )}
       </Seat>
 
       {/* 荷台の同乗席。原点が座面、前方は-Z。Vehicleごと動くので同期は不要 */}
@@ -388,12 +395,15 @@ export const Item = () => {
         position={[0, 0.72, 0.62]}
         exitOffset={{ forward: 0, right: -1 }}
         interactionText="荷台に乗る"
+        enabled={!isPreview}
       >
-        {/* シートを狙いやすくする透明な当たり判定 */}
-        <mesh position={[0, 0.05, 0]}>
-          <boxGeometry args={[0.4, 0.22, 0.4]} />
-          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-        </mesh>
+        {/* シートを狙いやすくする透明な当たり判定。プレビューでは白キューブ化するため描画しない */}
+        {!isPreview && (
+          <mesh position={[0, 0.05, 0]}>
+            <boxGeometry args={[0.4, 0.22, 0.4]} />
+            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+          </mesh>
+        )}
       </Seat>
     </Vehicle>
   )
