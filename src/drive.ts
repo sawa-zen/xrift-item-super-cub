@@ -195,6 +195,8 @@ export interface SuperCubDriveState {
   rev: number
   /** 変速トルク抜けの残り時間 [s] */
   cut: number
+  /** 機械ブレーキ中か(Sキー)。ブレーキランプ表示用。運転者のクライアントでのみ更新 */
+  brake: boolean
   /** Shiftキーによるシフトアップ要求回数 */
   shiftRequests: number
   /** Sダブルタップによるシフトダウン要求回数 */
@@ -226,6 +228,7 @@ const getState = (vehicle: Group): SuperCubDriveState => {
     gear: 0,
     rev: 0,
     cut: 0,
+    brake: false,
     shiftRequests: 0,
     downRequests: 0,
     prevForward: 0,
@@ -240,6 +243,7 @@ const getState = (vehicle: Group): SuperCubDriveState => {
     lean: 0,
   }) as SuperCubDriveState
   // 旧セーブとの互換のため欠損補完
+  state.brake ??= false
   state.hasGround ??= false
   state.noGroundFrames ??= 0
   state.vy ??= 0
@@ -274,6 +278,7 @@ export const driveSuperCub = (
     vehicle.quaternion.identity()
     state.speed = 0
     state.vy = 0
+    state.brake = false
     state.pitch = 0
     state.roll = 0
     state.lean = 0
@@ -355,6 +360,8 @@ export const driveSuperCub = (
   const inNeutral = state.gear === 0
   // NでのW開度(空ぶかし用)。音の表示用に保持する
   state.rev = inNeutral ? Math.max(0, input.forward) : 0
+  // 機械ブレーキ中か。ブレーキランプ表示用(Nのよちよち後退はブレーキ扱いにしない)
+  state.brake = !inNeutral && input.forward < -0.5
   const gearIndex = Math.min(Math.max(state.gear, 1), gears.length) - 1
   // 登坂では最高速が落ち、下りでは少し伸びる。state.pitch(+が登り)を使う
   const gradeFactor = Math.max(0.35, Math.min(1.25, 1 - state.pitch * 1.1))

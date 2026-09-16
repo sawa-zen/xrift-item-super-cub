@@ -119,45 +119,63 @@ const createPivots = (): Pivots => {
 const HEADLAMP_GLASS = 'SuperCub_Steer_HeadlampGlass'
 /** 点灯時の発光色(スポットライトと同系の電球色) */
 const HEADLAMP_GLOW = '#fff2cf'
+/** テールランプ(尾灯兼ブレーキ)の構成部品。後端 Z≈-0.87 */
+const TAIL_PARTS = ['SuperCub_RedLens', 'SuperCub_RedPrism']
+/** 尾灯・ブレーキ時の発光色と強さ */
+const TAIL_GLOW = '#ff2015'
+const TAIL_DIM = 0.7
+const TAIL_BRIGHT = 3.0
+
+interface GlowMaterials {
+  headlamp: MeshStandardMaterial[]
+  tail: MeshStandardMaterial[]
+}
 
 const SuperCubModel = ({
   pivots,
   onAttached,
-  onHeadlampMaterials,
+  onGlowMaterials,
 }: {
   pivots: Pivots
   onAttached: () => void
-  onHeadlampMaterials: (mats: MeshStandardMaterial[]) => void
+  onGlowMaterials: (mats: GlowMaterials) => void
 }) => {
   const { scene } = useGLTF(modelUrl, false, false)
-  const { model, headlamps } = useMemo(() => {
+  const { model, glow } = useMemo(() => {
     // 複数配置時にもオブジェクトの親子関係を共有しない。
     const instance = scene.clone(true)
-    // cloneはマテリアルを共有するため、ヘッドライトだけ複製して配置間で独立させる。
-    // 点灯時の発光切り替えが他のカブに波及しないようにする
-    const headlampMats = new Set<MeshStandardMaterial>()
+    // cloneはマテリアルを共有するため、発光させる部品だけ複製して配置間で独立させる。
+    // 点灯切り替えが他のカブに波及しないようにする
+    const headlamp = new Set<MeshStandardMaterial>()
+    const tail = new Set<MeshStandardMaterial>()
     instance.traverse((object) => {
       if (object instanceof Mesh) {
         object.castShadow = true
         object.receiveShadow = true
-        if (object.name === HEADLAMP_GLASS) {
+        const target =
+          object.name === HEADLAMP_GLASS
+            ? headlamp
+            : TAIL_PARTS.includes(object.name)
+              ? tail
+              : null
+        if (target) {
           const mat = object.material as MeshStandardMaterial | MeshStandardMaterial[]
           const mats = Array.isArray(mat) ? mat : [mat]
           const clones = mats.map((m) => {
             const clone = m.clone()
-            headlampMats.add(clone)
+            target.add(clone)
             return clone
           })
           object.material = Array.isArray(mat) ? clones : clones[0]
         }
       }
     })
-    return { model: instance, headlamps: [...headlampMats] }
+    return { model: instance, glow: { headlamp: [...headlamp], tail: [...tail] } }
   }, [scene])
 
   useEffect(() => {
-    onHeadlampMaterials(headlamps)
-  }, [headlamps, onHeadlampMaterials])
+    onGlowMaterials(glow)
+  }, [glow, onGlowMaterials])
 
   useEffect(() => {
     // traverse中のattachは子配列を壊すため、収集してから移動する。
@@ -253,6 +271,7 @@ export const Item = () => {
       st.rev = 0
       st.vy = 0
       st.cut = 0
+      st.brake = false
       st.shiftRequests = 0
       st.downRequests = 0
       st.prevForward = 0
@@ -275,6 +294,9 @@ export const Item = () => {
   // マウント時点のスナップショット用。effect再実行ループを避けるためref経由で読む
   const restPoseRef = useRef(restPose)
   restPoseRef.current = restPose
+  // ブレーキランプの点灯状態。速度と違い運転者以外にも見せたいため、
+  // 変化の瞬間だけ運転者が配信する(毎フレーム送らない)
+  const [brakeLit, setBrakeLit] = useInstanceState<boolean>(`${vehicleId}:brake`, false)
   // 再表示直後の数フレームは原点に吸着させる。
   // Vehicleの同期姿勢が古いままでlertで引き戻されても負けないため
   const pinToOriginFrames = useRef(0)
@@ -334,6 +356,7 @@ export const Item = () => {
           st.rev = 0
           st.vy = 0
           st.cut = 0
+          st.brake = false
           st.shiftRequests = 0
           st.downRequests = 0
           st.prevForward = 0
@@ -401,6 +424,7 @@ export const Item = () => {
   // 速度は運転者のローカルにしか無いため、降りた本人のクライアントで消す
   const isDriver = useIsDriver(driverSeatId)
   const wasDriver = useRef(false)
+  const lastPublishedBrake = useRef(false)
   useEffect(() => {
     if (wasDriver.current && !isDriver) {
       const vehicle = vehicleChildRef.current?.parent as Group | undefined
@@ -409,13 +433,30 @@ export const Item = () => {
         st.speed = 0
         st.rev = 0
         st.cut = 0
+        st.brake = false
         st.shiftRequests = 0
         st.downRequests = 0
         st.prevForward = 0
       }
+      // ブレーキ踏みっぱなしで降りてもランプが残らないよう消灯を送る
+      lastPublishedBrake.current = false
+      setBrakeLit(false)
     }
     wasDriver.current = isDriver
-  }, [isDriver])
+  }, [isDriver, setBrakeLit])
+
+  // ブレーキ状態の配信。drive側のフラグは運転者のローカルにしか無いため、
+  // 運転者のクライアントが変化の瞬間だけ送る。他者は読むだけ
+  useFrame(() => {
+    if (!isDriver) return
+    const vehicle = vehicleChildRef.current?.parent as Group | undefined
+    const brake =
+      (vehicle?.userData.superCub as SuperCubDriveState | undefined)?.brake ?? false
+    if (brake !== lastPublishedBrake.current) {
+      lastPublishedBrake.current = brake
+      setBrakeLit(brake)
+    }
+  })
 
   // エンジンONは運転席の占有に連動。誰も乗っていなければライトも消える
   const engineOn = useSyncExternalStore(
@@ -424,23 +465,33 @@ export const Item = () => {
     () => false,
   )
 
-  // ヘッドライトレンズの発光切り替え。マテリアルは配置ごとに複製済み。
+  // ヘッドライトレンズ・テールランプの発光切り替え。マテリアルは配置ごとに複製済み。
   // 元のemissiveを覚えておき、消灯時はGLB本来の見た目に戻す
   const headlampMats = useRef<MeshStandardMaterial[]>([])
   const headlampBase = useRef<Array<{ emissive: string; intensity: number }>>([])
+  const tailMats = useRef<MeshStandardMaterial[]>([])
+  const tailBase = useRef<Array<{ emissive: string; intensity: number }>>([])
   const engineOnRef = useRef(engineOn)
   engineOnRef.current = engineOn
-  const onHeadlampMaterials = useCallback((mats: MeshStandardMaterial[]) => {
-    headlampMats.current = mats
-    headlampBase.current = mats.map((m) => ({
+  const snapshotBase = (mats: MeshStandardMaterial[]) =>
+    mats.map((m) => ({
       emissive: `#${m.emissive.getHexString()}`,
       intensity: m.emissiveIntensity,
     }))
+  const onGlowMaterials = useCallback((mats: GlowMaterials) => {
+    headlampMats.current = mats.headlamp
+    headlampBase.current = snapshotBase(mats.headlamp)
+    tailMats.current = mats.tail
+    tailBase.current = snapshotBase(mats.tail)
     // モデル到着が着席より遅い場合に備え、到着時点の点灯状態を即適用する
     if (engineOnRef.current) {
-      for (const m of mats) {
+      for (const m of mats.headlamp) {
         m.emissive.set(HEADLAMP_GLOW)
         m.emissiveIntensity = 2.4
+      }
+      for (const m of mats.tail) {
+        m.emissive.set(TAIL_GLOW)
+        m.emissiveIntensity = TAIL_DIM
       }
     }
   }, [])
@@ -458,6 +509,26 @@ export const Item = () => {
       }
     })
   }, [engineOn])
+
+  // テールランプ。実車通り、エンジンONで尾灯(弱発光)、ブレーキで強発光の二段階。
+  // 誰も乗っていなければGLB本来の見た目に戻す
+  useEffect(() => {
+    tailMats.current.forEach((m, i) => {
+      if (!engineOn) {
+        const base = tailBase.current[i]
+        if (base) {
+          m.emissive.set(base.emissive)
+          m.emissiveIntensity = base.intensity
+        }
+      } else if (brakeLit) {
+        m.emissive.set(TAIL_GLOW)
+        m.emissiveIntensity = TAIL_BRIGHT
+      } else {
+        m.emissive.set(TAIL_GLOW)
+        m.emissiveIntensity = TAIL_DIM
+      }
+    })
+  }, [engineOn, brakeLit])
 
   // 地形追従用のRapierワールドをVehicleに結びつける
   const { world, rapier } = useRapier()
@@ -563,7 +634,7 @@ export const Item = () => {
           <primitive object={pivots.wheelRear} position={REAR_AXLE.toArray()} />
           <primitive object={pivots.stand} position={STAND_PIVOT.toArray()} />
           <Suspense fallback={null}>
-            <SuperCubModel pivots={pivots} onAttached={onAttached} onHeadlampMaterials={onHeadlampMaterials} />
+            <SuperCubModel pivots={pivots} onAttached={onAttached} onGlowMaterials={onGlowMaterials} />
           </Suspense>
         </group>
       </group>
