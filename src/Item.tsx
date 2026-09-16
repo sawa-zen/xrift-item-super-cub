@@ -3,7 +3,7 @@ import { useGLTF } from '@react-three/drei'
 import { useFrame } from '@react-three/fiber'
 import { useRapier } from '@react-three/rapier'
 import { Seat, Vehicle, useInstanceState, useItem, usePlacementState, useSeatContext } from '@xrift/world-components'
-import { Group, Matrix4, Mesh, Object3D, Quaternion, Vector3 } from 'three'
+import { Group, Matrix4, Mesh, MeshStandardMaterial, Object3D, Quaternion, Vector3 } from 'three'
 import { driveSuperCub } from './drive'
 import type { GroundProbe, SuperCubDriveState } from './drive'
 import { GearMeter3D, useIsDriver } from './GearDisplay'
@@ -115,25 +115,49 @@ const createPivots = (): Pivots => {
   return { steerBase, steerTurn, wheelFront, wheelRear, stand }
 }
 
+/** ヘッドライトのレンズ名。点灯時はこのマテリアルを発光させる */
+const HEADLAMP_GLASS = 'SuperCub_Steer_HeadlampGlass'
+/** 点灯時の発光色(スポットライトと同系の電球色) */
+const HEADLAMP_GLOW = '#fff2cf'
+
 const SuperCubModel = ({
   pivots,
   onAttached,
+  onHeadlampMaterials,
 }: {
   pivots: Pivots
   onAttached: () => void
+  onHeadlampMaterials: (mats: MeshStandardMaterial[]) => void
 }) => {
   const { scene } = useGLTF(modelUrl, false, false)
-  const model = useMemo(() => {
+  const { model, headlamps } = useMemo(() => {
     // 複数配置時にもオブジェクトの親子関係を共有しない。
     const instance = scene.clone(true)
+    // cloneはマテリアルを共有するため、ヘッドライトだけ複製して配置間で独立させる。
+    // 点灯時の発光切り替えが他のカブに波及しないようにする
+    const headlampMats = new Set<MeshStandardMaterial>()
     instance.traverse((object) => {
       if (object instanceof Mesh) {
         object.castShadow = true
         object.receiveShadow = true
+        if (object.name === HEADLAMP_GLASS) {
+          const mat = object.material as MeshStandardMaterial | MeshStandardMaterial[]
+          const mats = Array.isArray(mat) ? mat : [mat]
+          const clones = mats.map((m) => {
+            const clone = m.clone()
+            headlampMats.add(clone)
+            return clone
+          })
+          object.material = Array.isArray(mat) ? clones : clones[0]
+        }
       }
     })
-    return instance
+    return { model: instance, headlamps: [...headlampMats] }
   }, [scene])
+
+  useEffect(() => {
+    onHeadlampMaterials(headlamps)
+  }, [headlamps, onHeadlampMaterials])
 
   useEffect(() => {
     // traverse中のattachは子配列を壊すため、収集してから移動する。
@@ -400,6 +424,41 @@ export const Item = () => {
     () => false,
   )
 
+  // ヘッドライトレンズの発光切り替え。マテリアルは配置ごとに複製済み。
+  // 元のemissiveを覚えておき、消灯時はGLB本来の見た目に戻す
+  const headlampMats = useRef<MeshStandardMaterial[]>([])
+  const headlampBase = useRef<Array<{ emissive: string; intensity: number }>>([])
+  const engineOnRef = useRef(engineOn)
+  engineOnRef.current = engineOn
+  const onHeadlampMaterials = useCallback((mats: MeshStandardMaterial[]) => {
+    headlampMats.current = mats
+    headlampBase.current = mats.map((m) => ({
+      emissive: `#${m.emissive.getHexString()}`,
+      intensity: m.emissiveIntensity,
+    }))
+    // モデル到着が着席より遅い場合に備え、到着時点の点灯状態を即適用する
+    if (engineOnRef.current) {
+      for (const m of mats) {
+        m.emissive.set(HEADLAMP_GLOW)
+        m.emissiveIntensity = 2.4
+      }
+    }
+  }, [])
+  useEffect(() => {
+    headlampMats.current.forEach((m, i) => {
+      if (engineOn) {
+        m.emissive.set(HEADLAMP_GLOW)
+        m.emissiveIntensity = 2.4
+      } else {
+        const base = headlampBase.current[i]
+        if (base) {
+          m.emissive.set(base.emissive)
+          m.emissiveIntensity = base.intensity
+        }
+      }
+    })
+  }, [engineOn])
+
   // 地形追従用のRapierワールドをVehicleに結びつける
   const { world, rapier } = useRapier()
   useEffect(() => {
@@ -504,7 +563,7 @@ export const Item = () => {
           <primitive object={pivots.wheelRear} position={REAR_AXLE.toArray()} />
           <primitive object={pivots.stand} position={STAND_PIVOT.toArray()} />
           <Suspense fallback={null}>
-            <SuperCubModel pivots={pivots} onAttached={onAttached} />
+            <SuperCubModel pivots={pivots} onAttached={onAttached} onHeadlampMaterials={onHeadlampMaterials} />
           </Suspense>
         </group>
       </group>
