@@ -418,10 +418,13 @@ export const driveSuperCub = (
   // 車体前方(-Z)へ進む。傾いていれば坂に沿って進む
   vehicle.translateZ(-state.speed * dt)
 
-  // 止まっているときは曲がらず、速度が上がるほど旋回を穏やかにする
+  // 止まっているときは曲がらず、速度が上がるほど旋回を穏やかにする。
+  // 後退時(Nのよちよち後退)はハンドルと同じ側へ下がっていくようヨーを反転する
+  // (反転しないとDを押しながら下がると左後ろへ進んでしまう)
   const grip = Math.min(1, Math.abs(state.speed) / 1.5)
   const highSpeedCalm = 1 / (1 + (Math.abs(state.speed) / SUPER_CUB_TUNE.maxSpeed) * 1.2)
-  const yawRate = -input.right * SUPER_CUB_TUNE.turnRate * grip * highSpeedCalm
+  const reverseSign = state.speed < 0 ? -1 : 1
+  const yawRate = -input.right * SUPER_CUB_TUNE.turnRate * grip * highSpeedCalm * reverseSign
   vehicle.rotateY(yawRate * dt)
 
   // 旋回時は曲がる方向へリーンする(横G相当。+が左傾き)。

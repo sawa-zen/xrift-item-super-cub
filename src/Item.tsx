@@ -1,8 +1,8 @@
-import { Suspense, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { Suspense, useCallback, useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react'
 import { useGLTF } from '@react-three/drei'
 import { useFrame } from '@react-three/fiber'
 import { useRapier } from '@react-three/rapier'
-import { Seat, Vehicle, useSeatContext } from '@xrift/world-components'
+import { Seat, Vehicle, useItem, useSeatContext } from '@xrift/world-components'
 import { Group, Matrix4, Mesh, Object3D, Quaternion, Vector3 } from 'three'
 import { driveSuperCub } from './drive'
 import type { GroundProbe, SuperCubDriveState } from './drive'
@@ -12,6 +12,29 @@ import { EngineSound } from './EngineSound'
 export const VEHICLE_ID = 'super-cub'
 export const DRIVER_SEAT_ID = 'super-cub-driver'
 export const PASSENGER_SEAT_ID = 'super-cub-passenger'
+
+/**
+ * 配置ごとの固有ID。`useItem().id` は配置オブジェクトごとに一意なので、
+ * Vehicle/Seat の登録IDに前置して複数配置時の衝突を防ぐ。
+ * ItemProvider 外(開発環境など)ではマウントごとのフォールバックIDを使う。
+ */
+const useScopedIds = () => {
+  const fallback = useId()
+  let itemId: string
+  try {
+    itemId = useItem().id
+  } catch {
+    itemId = `local${fallback.replace(/[^a-zA-Z0-9-_]/g, '')}`
+  }
+  return useMemo(
+    () => ({
+      vehicleId: `${itemId}:${VEHICLE_ID}`,
+      driverSeatId: `${itemId}:${DRIVER_SEAT_ID}`,
+      passengerSeatId: `${itemId}:${PASSENGER_SEAT_ID}`,
+    }),
+    [itemId],
+  )
+}
 
 // 相対URLにすることで、Module Federationの配信先からモデルを取得する。
 const modelUrl = new URL('./assets/super-cub.glb', import.meta.url).href
@@ -131,6 +154,7 @@ interface AnimState {
  * 車輪・ハンドル・スタンドは見た目の追従で、全クライアントで動く。
  */
 export const Item = () => {
+  const { vehicleId, driverSeatId, passengerSeatId } = useScopedIds()
   const pivots = useMemo(createPivots, [])
   const modelRef = useRef<Group>(null)
   // Vehicleグループへの参照取得用。Vehicleはrefを中継しないため、
@@ -191,7 +215,7 @@ export const Item = () => {
 
   // 降車時はスピードだけリセットし、ギアは保持する。
   // 速度は運転者のローカルにしか無いため、降りた本人のクライアントで消す
-  const isDriver = useIsDriver(DRIVER_SEAT_ID)
+  const isDriver = useIsDriver(driverSeatId)
   const wasDriver = useRef(false)
   useEffect(() => {
     if (wasDriver.current && !isDriver) {
@@ -213,7 +237,7 @@ export const Item = () => {
   const seatCtx = useSeatContext()
   const engineOn = useSyncExternalStore(
     seatCtx.subscribeOccupancy,
-    () => seatCtx.getOccupantId(DRIVER_SEAT_ID) !== null,
+    () => seatCtx.getOccupantId(driverSeatId) !== null,
     () => false,
   )
 
@@ -309,7 +333,7 @@ export const Item = () => {
   })
 
   return (
-    <Vehicle id={VEHICLE_ID} onDrive={driveSuperCub}>
+    <Vehicle id={vehicleId} onDrive={driveSuperCub}>
       {/* 車体(Vehicleローカル座標。前方は-Z) */}
       <group ref={vehicleChildRef} rotation={[0, MODEL_YAW, 0]}>
         <group ref={modelRef}>
@@ -339,13 +363,13 @@ export const Item = () => {
       />
 
       {/* ギア比表示。VRでも見える3Dメーター(実メーターのすぐ上) */}
-      <GearMeter3D getVehicle={getVehicle} seatId={DRIVER_SEAT_ID} />
+      <GearMeter3D getVehicle={getVehicle} seatId={driverSeatId} />
       {/* 合成エンジン音(WebAudioのみ。VRでも鳴る) */}
-      <EngineSound getVehicle={getVehicle} seatId={DRIVER_SEAT_ID} />
+      <EngineSound getVehicle={getVehicle} seatId={driverSeatId} />
 
       {/* 運転席。原点が座面、前方は-Z。降車はマフラーと逆の左側へ */}
       <Seat
-        id={DRIVER_SEAT_ID}
+        id={driverSeatId}
         driver
         position={[0, 0.74, 0.265]}
         exitOffset={{ forward: 0, right: -1 }}
@@ -360,7 +384,7 @@ export const Item = () => {
 
       {/* 荷台の同乗席。原点が座面、前方は-Z。Vehicleごと動くので同期は不要 */}
       <Seat
-        id={PASSENGER_SEAT_ID}
+        id={passengerSeatId}
         position={[0, 0.72, 0.62]}
         exitOffset={{ forward: 0, right: -1 }}
         interactionText="荷台に乗る"

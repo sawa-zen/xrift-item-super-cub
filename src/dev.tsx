@@ -19,7 +19,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Environment, Lightformer, OrbitControls } from '@react-three/drei'
 import { CuboidCollider, RigidBody, BallCollider, Physics, useRapier } from '@react-three/rapier'
 import { Group, Vector3 } from 'three'
-import { DevEnvironment, XRiftProvider, useSeatContext } from '@xrift/world-components'
+import { DevEnvironment, ItemProvider, XRiftProvider, useSeatContext } from '@xrift/world-components'
 import type { SeatControlInput } from '@xrift/world-components'
 import { DRIVER_SEAT_ID, PASSENGER_SEAT_ID, Item } from './Item'
 import { driveSuperCub, getSuperCubStatus, SUPER_CUB_TUNE } from './drive'
@@ -136,14 +136,17 @@ const rootElement = document.getElementById('root')
 if (!rootElement) throw new Error('Root element not found')
 
 /** 開発用：Tキーで運転席・Gキーで荷台に直接着席（クリック狙い不要のテスト経路） */
+const DEV_ITEM_ID = 'dev-cub-1'
+const DEV_DRIVER_SEAT_ID = `${DEV_ITEM_ID}:${DRIVER_SEAT_ID}`
+const DEV_PASSENGER_SEAT_ID = `${DEV_ITEM_ID}:${PASSENGER_SEAT_ID}`
 const DevSitKey = () => {
   const { sit } = useSeatContext()
   const sitRef = useRef(sit)
   sitRef.current = sit
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.code === 'KeyT') sitRef.current(DRIVER_SEAT_ID)
-      if (event.code === 'KeyG') sitRef.current(PASSENGER_SEAT_ID)
+      if (event.code === 'KeyT') sitRef.current(DEV_DRIVER_SEAT_ID)
+      if (event.code === 'KeyG') sitRef.current(DEV_PASSENGER_SEAT_ID)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -240,7 +243,9 @@ if (orbitMode) {
       <DevSitKey />
       <DevGround />
       <DevTerrain />
-      <Item />
+      <ItemProvider id={DEV_ITEM_ID}>
+        <Item />
+      </ItemProvider>
       <hemisphereLight args={['#f1f5ff', '#7a7c68', 1.4]} />
       <directionalLight
         position={[-3, 6, 4]}
