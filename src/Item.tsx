@@ -2,7 +2,7 @@ import { Suspense, useCallback, useEffect, useId, useMemo, useRef, useSyncExtern
 import { useGLTF } from '@react-three/drei'
 import { useFrame } from '@react-three/fiber'
 import { useRapier } from '@react-three/rapier'
-import { Seat, Vehicle, useItem, usePlacementState, useSeatContext } from '@xrift/world-components'
+import { Seat, Vehicle, useInstanceState, useItem, usePlacementState, useSeatContext } from '@xrift/world-components'
 import { Group, Matrix4, Mesh, Object3D, Quaternion, Vector3 } from 'three'
 import { driveSuperCub } from './drive'
 import type { GroundProbe, SuperCubDriveState } from './drive'
@@ -12,6 +12,29 @@ import { EngineSound } from './EngineSound'
 export const VEHICLE_ID = 'super-cub'
 export const DRIVER_SEAT_ID = 'super-cub-driver'
 export const PASSENGER_SEAT_ID = 'super-cub-passenger'
+
+/**
+ * プラットフォーム側が「停めた場所」としてインスタンス状態に残す鍵の形式。
+ * xrift-frontend の `SeatSystem/vehicleRegistry.ts` (`vehicleRestPoseStateId`) と同居する。
+ * 誰も運転していないとき `<Vehicle>` はこの姿勢へ寄せ続けるため、掛け直しで
+ * 配置原点に戻したいときはローカル座標のリセットだけでは足りず、ここも原点で
+ * 上書きする必要がある。形式が変わってもローカルリセット側は効くので無害。
+ */
+const vehicleRestPoseKey = (vehicleId: string): string => `xrift:vehicle-pose:${vehicleId}`
+interface VehiclePoseLike {
+  position: { x: number; y: number; z: number }
+  quaternion: { x: number; y: number; z: number; w: number }
+}
+const ORIGIN_POSE: VehiclePoseLike = {
+  position: { x: 0, y: 0, z: 0 },
+  quaternion: { x: 0, y: 0, z: 0, w: 1 },
+}
+/**
+ * このクライアントで一度でもマウントした vehicleId。
+ * 同一IDの掛け直し(移動確定・undo等)と初回マウント(後から入室した人の受信)を
+ * 区別する。掛け直しのときだけ停めた場所を原点で上書きし、駐車位置の復元は保つ。
+ */
+const seenVehicleIds = new Set<string>()
 
 /**
  * 配置ごとの固有ID。`useItem().id` は配置オブジェクトごとに一意なので、
@@ -193,11 +216,11 @@ export const Item = () => {
     [],
   )
 
-  // 引っ込め→再表示で掛け直されたとき、走行でずれた分を捨てて配置原点に戻す。
-  // ギアは保持する
-  useEffect(() => {
+  // 走行でずれたVehicle姿勢を配置原点に戻す。ギアは保持する。
+  // 見た目アニメの前回値も捨て、原点ワープで車輪が暴転しないようにする
+  const resetVehicleToOrigin = useCallback(() => {
     const vehicle = vehicleChildRef.current?.parent as Group | undefined
-    if (!vehicle) return
+    if (!vehicle) return false
     vehicle.position.set(0, 0, 0)
     vehicle.quaternion.identity()
     const st = vehicle.userData.superCub as SuperCubDriveState | undefined
@@ -215,7 +238,140 @@ export const Item = () => {
       st.hasGround = false
       st.noGroundFrames = 0
     }
+    anim.current.ready = false
+    return true
   }, [])
+
+  // プラットフォーム側の「停めた場所」。誰も運転していないとき全クライアントの
+  // `<Vehicle>` がここへ寄せる。初回マウント時は駐車位置の復元に使うため触らない
+  const [restPose, setRestPose] = useInstanceState<VehiclePoseLike | null>(
+    vehicleRestPoseKey(vehicleId),
+    null,
+  )
+  // マウント時点のスナップショット用。effect再実行ループを避けるためref経由で読む
+  const restPoseRef = useRef(restPose)
+  restPoseRef.current = restPose
+  // 再表示直後の数フレームは原点に吸着させる。
+  // Vehicleの同期姿勢が古いままでlertで引き戻されても負けないため
+  const pinToOriginFrames = useRef(0)
+  // 非表示化(ゼロスケール等)なしでアンマウントされる構成と、
+  // マウント維持のまま隠される構成の両方に対応する
+  const wasHiddenRef = useRef(false)
+  // 誰かが乗っている間は吸着しない(発進と競合させないため)
+  const seatCtxForPin = useSeatContext()
+
+  // 引っ込め→再表示で掛け直されたとき、走行でずれた分を捨てて配置原点に戻す。
+  // マウント時にref未確定だと1発では効かないため、取れるまで再試行する。
+  // アンマウント時(引っ込め)にも原点へ戻し、残った姿勢を持ち越さない。
+  // 同一IDの掛け直し(移動確定・undo等)では、プラットフォーム側の「停めた場所」も
+  // 原点で上書きする(全クライアントへ配信)。初回マウント時は駐車位置の復元を
+  // 妨げないよう触らない。既に原点なら送らない(再実行ループ防止)
+  useEffect(() => {
+    const isRemount = seenVehicleIds.has(vehicleId)
+    seenVehicleIds.add(vehicleId)
+    const prev = restPoseRef.current
+    if (
+      isRemount &&
+      prev !== null &&
+      prev !== undefined &&
+      (prev.position.x !== 0 ||
+        prev.position.y !== 0 ||
+        prev.position.z !== 0 ||
+        prev.quaternion.x !== 0 ||
+        prev.quaternion.y !== 0 ||
+        prev.quaternion.z !== 0 ||
+        prev.quaternion.w !== 1)
+    ) {
+      setRestPose(ORIGIN_POSE)
+    }
+    let cancelled = false
+    let raf = 0
+    const tryReset = () => {
+      if (cancelled) return
+      if (resetVehicleToOrigin()) {
+        pinToOriginFrames.current = 30
+      } else {
+        raf = requestAnimationFrame(tryReset)
+      }
+    }
+    tryReset()
+    const vehicleAtMount = vehicleChildRef.current?.parent as Group | undefined
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(raf)
+      const vehicle =
+        (vehicleChildRef.current?.parent as Group | undefined) ?? vehicleAtMount
+      if (vehicle) {
+        vehicle.position.set(0, 0, 0)
+        vehicle.quaternion.identity()
+        const st = vehicle.userData.superCub as SuperCubDriveState | undefined
+        if (st) {
+          st.speed = 0
+          st.rev = 0
+          st.vy = 0
+          st.cut = 0
+          st.shiftRequests = 0
+          st.downRequests = 0
+          st.prevForward = 0
+          st.pitch = 0
+          st.roll = 0
+          st.lean = 0
+          st.hasGround = false
+          st.noGroundFrames = 0
+        }
+      }
+      pinToOriginFrames.current = 0
+      wasHiddenRef.current = false
+    }
+  }, [resetVehicleToOrigin, vehicleId, setRestPose])
+
+  // マウント維持のまま隠す構成向け。祖先のvisible/scaleから非表示を検知し、
+  // 引っ込めた瞬間と再表示の瞬間に原点へ戻す
+  useFrame(() => {
+    const vehicle = vehicleChildRef.current?.parent as Group | undefined
+    if (!vehicle) return
+    let hidden = false
+    let node: Object3D | null = vehicle
+    while (node) {
+      if (!node.visible) {
+        hidden = true
+        break
+      }
+      const s = node.scale
+      if (s.x * s.x + s.y * s.y + s.z * s.z < 1e-8) {
+        hidden = true
+        break
+      }
+      node = node.parent
+    }
+    if (hidden) {
+      if (!wasHiddenRef.current) {
+        wasHiddenRef.current = true
+        resetVehicleToOrigin()
+      }
+      return
+    }
+    if (wasHiddenRef.current) {
+      wasHiddenRef.current = false
+      if (resetVehicleToOrigin()) {
+        pinToOriginFrames.current = 30
+      }
+      return
+    }
+    if (pinToOriginFrames.current > 0) {
+      // 誰かが乗ったら吸着をやめ、走行と競合させない
+      try {
+        if (seatCtxForPin.getOccupantId(driverSeatId) !== null) {
+          pinToOriginFrames.current = 0
+          return
+        }
+      } catch {
+        // Provider外(開発環境など)では占有が取れない。吸着を続ける
+      }
+      pinToOriginFrames.current -= 1
+      resetVehicleToOrigin()
+    }
+  })
 
   // 降車時はスピードだけリセットし、ギアは保持する。
   // 速度は運転者のローカルにしか無いため、降りた本人のクライアントで消す
@@ -238,10 +394,9 @@ export const Item = () => {
   }, [isDriver])
 
   // エンジンONは運転席の占有に連動。誰も乗っていなければライトも消える
-  const seatCtx = useSeatContext()
   const engineOn = useSyncExternalStore(
-    seatCtx.subscribeOccupancy,
-    () => seatCtx.getOccupantId(driverSeatId) !== null,
+    seatCtxForPin.subscribeOccupancy,
+    () => seatCtxForPin.getOccupantId(driverSeatId) !== null,
     () => false,
   )
 
@@ -381,9 +536,10 @@ export const Item = () => {
         enabled={!isPreview}
       >
         {/* シートを狙いやすくする透明な当たり判定。プレビューでは白キューブ化するため描画しない */}
+        {/* 荷台席と重ならないよう前方に寄せる(ワールドZ: 0.005〜0.425) */}
         {!isPreview && (
-          <mesh position={[0, 0.06, 0]}>
-            <boxGeometry args={[0.42, 0.24, 0.55]} />
+          <mesh position={[0, 0.06, -0.05]}>
+            <boxGeometry args={[0.42, 0.24, 0.42]} />
             <meshBasicMaterial transparent opacity={0} depthWrite={false} />
           </mesh>
         )}
@@ -398,9 +554,10 @@ export const Item = () => {
         enabled={!isPreview}
       >
         {/* シートを狙いやすくする透明な当たり判定。プレビューでは白キューブ化するため描画しない */}
+        {/* 運転席と重ならないよう後方に寄せる(ワールドZ: 0.52〜0.82) */}
         {!isPreview && (
-          <mesh position={[0, 0.05, 0]}>
-            <boxGeometry args={[0.4, 0.22, 0.4]} />
+          <mesh position={[0, 0.05, 0.05]}>
+            <boxGeometry args={[0.4, 0.22, 0.3]} />
             <meshBasicMaterial transparent opacity={0} depthWrite={false} />
           </mesh>
         )}
